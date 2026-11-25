@@ -40,7 +40,7 @@
   #story video#video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:2}
   #story video#vbg{display:none!important}
   /* big screen: the video sits inside a safe area (nothing cut off by the screen frame), a blurred copy fills the wide sides */
-  body.big #story video#video{left:50%;top:50%;inset:auto;transform:translate(-50%,-50%);height:88vh;width:auto;max-width:90vw;box-shadow:0 0 6vh rgba(0,0,0,.8)}
+  body.big #story video#video{inset:0;left:0;top:0;width:100vw;height:100vh;transform:none;object-fit:contain;background:transparent}
   body.big #story video#vbg{display:none;position:absolute;inset:-5%;width:110%;height:110%;object-fit:cover;filter:blur(4vh) brightness(.45);z-index:1}
   body.big #story video#vbg[style*="block"]{display:block!important}
   #slide{zoom:var(--ui);position:relative;z-index:2;max-width:760px;padding:30px;font-size:clamp(20px,2.4vw,28px);line-height:1.55;font-family:Fredoka,sans-serif;opacity:0;transition:opacity .8s}
