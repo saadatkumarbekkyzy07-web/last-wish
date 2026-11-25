@@ -1281,7 +1281,7 @@ function nightComplete() {
   SAVE.stars[key] = Math.max(prev, stars);
   if (STAGES[curStage] && STAGES[curStage].type === 'night' && STAGES[curStage].night === G.night && curStage >= SAVE.unlocked) SAVE.unlocked = curStage + 1;
   saveGame();
-  setMenuCam('victory'); M.animator.loopPlay('dance');
+  setMenuCam('victory'); startCheer();
   overlay(`${night().title} survived!`,
     `<div class="bigstars">${starRow(stars, 'big')}</div>` +
     `Time: <b>${mmss(t)}</b> · ${gained ? `<b>+${gained} ★</b> for the market!` : (prev >= stars ? 'Your best is ' + prev + ' ★ — be faster for more stars.' : '')}` +
@@ -1619,7 +1619,7 @@ function duelLeader() {
 function duelEnd(winner) {
   if (G.state !== 'play' || G.mode !== 'duel') return;
   G.state = 'duelEnd'; leavePlay(); SFX.win();
-  if (winner === 'monkey') M.animator.loopPlay('dance');
+  if (winner === 'monkey') startCheer();
   else if (D2.e) { D2.e.dead = 0; D2.e.animator.loopPlay('dance'); }
   overlay(winner === 'monkey' ? '🐒 MONKEY WINS!' : '🪳 MEGA COCKROACH WINS!',
     `Monkey ♥ ${Math.max(0, Math.ceil(G.hp))} · Mega cockroach ♥ ${Math.max(0, Math.ceil(D2.e ? D2.e.hp : 0))}`,
@@ -1684,7 +1684,47 @@ function updateDuelHud() {
   const t = Math.max(0, G.timeLeft); $('dTimer').textContent = mmss(t);
   const cd = Math.max(0, (D2.cool.charge || 0) - G.time); $('d2Charge').textContent = cd > 0 ? cd.toFixed(1) + 's' : 'ready';
 }
+// ---- the monkey's winning celebration: arms up, waving, happy hops ----
+// (made in code: none of the Blender clips is a celebration)
+const CHEER = { on: false, t: 0 };
+const ch_v1 = new THREE.Vector3(), ch_v2 = new THREE.Vector3(), ch_v3 = new THREE.Vector3(), ch_q1 = new THREE.Quaternion(), ch_q2 = new THREE.Quaternion();
+function startCheer() {
+  stopDances(); M.animator.rest(); CHEER.on = true; CHEER.t = 0;
+}
+function aimBone(bone, child, target) {
+  bone.getWorldPosition(ch_v1); child.getWorldPosition(ch_v2);
+  const cur = ch_v2.sub(ch_v1).normalize();
+  ch_q1.setFromUnitVectors(cur, ch_v3.copy(target).normalize());
+  bone.getWorldQuaternion(ch_q2); ch_q1.multiply(ch_q2);                 // new world rotation
+  bone.parent.getWorldQuaternion(ch_q2); bone.quaternion.copy(ch_q2.invert().multiply(ch_q1));
+  bone.updateMatrixWorld(true);
+}
+function applyCheer(dt) {
+  CHEER.t += dt; const t = CHEER.t;
+  let skin = null; monkey.traverse((o) => { if (o.isSkinnedMesh && !skin) skin = o; });
+  if (!skin) return;
+  const B = {}; skin.skeleton.bones.forEach((b) => (B[b.name] = b));
+  skin.skeleton.pose();                       // stand straight (rest pose) ...
+  monkey.updateMatrixWorld(true);
+  const up = new THREE.Vector3(0, 1, 0);
+  const chest = B.Spine2 ? B.Spine2.getWorldPosition(new THREE.Vector3()) : null;
+  for (const side of ['Left', 'Right']) {     // ... then both arms up, waving
+    const arm = B[side + 'Arm'], fore = B[side + 'ForeArm'], hand = B[side + 'Hand'];
+    if (!arm || !fore || !hand || !chest) continue;
+    const out = arm.getWorldPosition(new THREE.Vector3()).sub(chest); out.y = 0; out.normalize();
+    const wave = Math.sin(t * 8 + (side === 'Left' ? 0 : Math.PI));
+    aimBone(arm, fore, up.clone().addScaledVector(out, 1.15 + 0.25 * wave));   // arms up in a wide V
+    aimBone(fore, hand, up.clone().addScaledVector(out, 0.75 + 0.55 * wave));  // hands waving
+  }
+  if (B.Head && B.Neck) { B.Head.rotation.x -= 0.12; B.Head.updateMatrixWorld(true); }
+  // duel: turn round to face your own camera while celebrating
+  if (G.state === 'duelEnd') { monkey.rotation.y = M.yaw + Math.PI; monkey.updateMatrixWorld(true); }
+  // put the feet back on the floor (the standing pose is taller than the walk), then hop
+  const box = new THREE.Box3().setFromObject(skin, true);
+  monkey.position.y += (M.y - box.min.y) + 0.06 * Math.abs(Math.sin(t * 5));
+}
 function stopDances() {
+  CHEER.on = false;
   Object.values(COSTUME_OBJ).forEach((c) => c.animator.stopLoop());
   if (D2.e) D2.e.animator.stopLoop();
 }
@@ -2079,6 +2119,7 @@ function loop(now) {
     }
   } else if (monkey) {
     updateMonkey(0); M.animator.update(dt); // menus: keep animations (dances) moving
+    if (CHEER.on && (G.state === 'victory' || G.state === 'duelEnd')) applyCheer(dt);
     if (G.state === 'duelEnd' && D2.e) D2.e.animator.update(dt);
   }
   updatePrompt();
@@ -2117,4 +2158,4 @@ function loop(now) {
 })();
 
 // handy for testing in the browser console
-window.__game = { G, M, SAVE, SETTINGS, scene, camera, spawnEnemy, showFact, beginNight, showMap, showMarket, startDuel, duelSetup, nightComplete, monkeyDown, setCostume, T, D2, PADS, attack, duelAttack, toTitle, quizStageIntro, startQuiz, finishQuiz, keys };
+window.__game = { duelEnd, G, M, SAVE, SETTINGS, scene, camera, spawnEnemy, showFact, beginNight, showMap, showMarket, startDuel, duelSetup, nightComplete, monkeyDown, setCostume, T, D2, PADS, attack, duelAttack, toTitle, quizStageIntro, startQuiz, finishQuiz, keys };
