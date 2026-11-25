@@ -422,6 +422,8 @@ class Animator {
   constructor(obj, clips, map, scale) {
     this.mixer = new THREE.AnimationMixer(obj);
     this.map = map; this.actions = {}; this.scale = scale; this.oneShot = null;
+    // the standing pose, to go back to when standing still (market)
+    this.pose0 = []; obj.traverse((o) => { if (o.isBone) this.pose0.push([o, o.position.clone(), o.quaternion.clone(), o.scale.clone()]); });
     for (const key in map) {
       const src = clips.find((c) => c.name === map[key].clip);
       if (!src) { console.warn('missing animation', map[key].clip); continue; }
@@ -467,6 +469,7 @@ class Animator {
     if (this.oneShot) { this.oneShot.stop(); this.oneShot = null; }
     this.walkW = 0; if (this.actions.walk) this.actions.walk.setEffectiveWeight(0);
     this.mixer.update(0);
+    for (const [b, p, q, sc] of this.pose0) { b.position.copy(p); b.quaternion.copy(q); b.scale.copy(sc); }
   }
   stopLoop() {
     if (!this.looping) return;
@@ -1991,7 +1994,33 @@ function camHit(from, dir, far) {
   return best;
 }
 // follow a character from behind; st = { pos, yaw, pitch, y, ground }
+// wall check with a "thick" ray (5 rays side by side): a door-frame edge can't make it flicker
+function camHitWide(from, dir, far) {
+  const side = new THREE.Vector3(-dir.z, 0, dir.x); if (side.lengthSq() < 1e-6) side.set(1, 0, 0); side.normalize();
+  let best = far; const o = new THREE.Vector3();
+  for (const [sx, sy] of [[0, 0], [0.13, 0], [-0.13, 0], [0, 0.1], [0, -0.08]]) {
+    o.copy(from).addScaledVector(side, sx); o.y += sy;
+    best = Math.min(best, camHit(o, dir, far));
+  }
+  return best;
+}
+// the open door the character is standing in front of (and facing), if any
+function doorToPeek(st) {
+  const f = new THREE.Vector2(Math.sin(st.yaw), Math.cos(st.yaw));
+  let best = null, bestW = 0;
+  for (const R of ROOMS) {
+    if (!R.pivot || R.openAmt < 0.6 || inRect(R.inner, st.pos.x, st.pos.z, 0)) continue;
+    const d = Math.hypot(st.pos.x - R.outer.x, st.pos.z - R.outer.y); if (d > 1.3) continue;
+    const ix = R.innerPt.x - R.outer.x, iz = R.innerPt.y - R.outer.y, il = Math.hypot(ix, iz) || 1;
+    const facing = (f.x * ix + f.y * iz) / il; if (facing < 0.35) continue;
+    const w = clamp((1.3 - d) / 0.6, 0, 1) * clamp((facing - 0.35) / 0.35, 0, 1);
+    if (w > bestW) { bestW = w; best = { R, w, ix: ix / il, iz: iz / il }; }
+  }
+  return best;
+}
 function followCam(cam, st, cp, cl, dt, key = 'p1') {
+  const U = cam.userData; if (U.camD === undefined) { U.camD = 0; U.peek = 0; U.boost = 0; }
+  const k = (r) => (dt > 0 ? Math.min(1, dt * r) : 1);
   const f = new THREE.Vector2(Math.sin(st.yaw), Math.cos(st.yaw));
   const pitch = st.pitch || 0, y = st.y || 0, ground = st.ground || 0;
   const V = SETTINGS.camera || {};
@@ -2000,23 +2029,26 @@ function followCam(cam, st, cp, cl, dt, key = 'p1') {
   const head = new THREE.Vector3(st.pos.x, lift + y * 0.5 + 0.45, st.pos.z);
   const want = new THREE.Vector3(st.pos.x - f.x * dist, h + lift, st.pos.z - f.y * dist);
   const dir = want.clone().sub(head); const full = dir.length(); dir.normalize();
-  // walls and doors stop the camera (so you never look through them into other rooms)
-  const free = camHit(head, dir, full);
-  const keep = Math.max(0.22, free - 0.12);
-  const target = head.clone().addScaledVector(dir, keep);
-  const squeeze = clamp(1 - keep / full, 0, 1);     // close to a wall: go up a little, use a wider lens
-  target.y += squeeze * 0.3;
-  cam.userData.boost = (cam.userData.boost || 0) + (squeeze * 22 - (cam.userData.boost || 0)) * (dt > 0 ? Math.min(1, dt * 4) : 1);
-  cp.lerp(target, dt > 0 ? 1 - Math.pow(0.0005, dt) : 1);
-  const d2 = cp.clone().sub(head); const len2 = d2.length();
-  if (len2 > 0.01) {                                // smoothing must never drag the camera through a wall
-    d2.normalize();
-    const free2 = camHit(head, d2, len2);
-    if (free2 < len2) cp.copy(head).addScaledVector(d2, Math.max(0.18, free2 - 0.1));
-  }
-  // keep looking ahead (through a doorway), not down at the monkey's head
-  const ahead = 0.7 + 0.9 * squeeze;
-  cl.set(st.pos.x + f.x * ahead, 0.36 + 0.25 * squeeze - pitch * 0.15 + lift + (y - lift) * 0.6, st.pos.z + f.y * ahead);
+  // walls and doors stop the camera; it comes in at once (never through a wall) but goes back out slowly
+  const allowed = Math.max(0.22, camHitWide(head, dir, full) - 0.14);
+  if (dt <= 0 || allowed < U.camD) U.camD = allowed; else U.camD += (allowed - U.camD) * k(2.2);
+  const squeeze = clamp(1 - U.camD / full, 0, 1);
+  const pos = head.clone().addScaledVector(dir, U.camD); pos.y += squeeze * 0.25;
+  const ahead = 0.7 + 0.8 * squeeze;
+  const look = new THREE.Vector3(st.pos.x + f.x * ahead, 0.36 + 0.2 * squeeze - pitch * 0.15 + lift + (y - lift) * 0.6, st.pos.z + f.y * ahead);
+  // standing at an open door, facing it: the camera rises into the doorway and looks down into the room
+  const pk = doorToPeek(st);
+  U.peek += ((pk ? pk.w : 0) - U.peek) * k(3);
+  if (U.peek > 0.01 && (pk || U.peekR)) {
+    if (pk) U.peekR = pk;
+    const P = U.peekR, R = P.R;
+    // in the door opening, high up, looking into the room (like peeking round the door)
+    const pp = new THREE.Vector3(R.innerPt.x, 1.5, R.innerPt.y);
+    const pl = new THREE.Vector3(R.center.x, 0.2, R.center.y);
+    pos.lerp(pp, U.peek); look.lerp(pl, U.peek);
+  } else if (!pk) U.peekR = null;
+  cp.copy(pos); cl.copy(look);
+  U.boost += (Math.max(squeeze * 16, U.peek * 20) - U.boost) * k(1.5);   // wider lens in tight spots, changes slowly
   cam.position.copy(cp); cam.lookAt(cl);
   updateFade(key, cp, st, dt);   // furniture in the way (chairs, curtains...) turns see-through
 }
