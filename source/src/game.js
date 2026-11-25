@@ -942,41 +942,45 @@ canvas.addEventListener('pointercancel', (e) => { if (e.pointerType !== 'mouse' 
 //   ◀ / ▶  = start stepping sideways        ⟲ / ⟳ = turn 45° per tap
 //   ■ STOP = stop moving                     RUN   = run on / off
 // 1 player: all buttons in one group on one side. 2 players: one group on each side.
-const PADS = [{ f: 0, s: 0, turn: 0, run: false }, { f: 0, s: 0, turn: 0, run: false }];
+// ---- big-screen movement pad: only 4 arrows ----
+// ▲ / ▼ : hold to walk forward / back; a quick tap keeps walking, tap again to stop
+// ◀ / ▶ : hold to keep turning; a quick tap turns 45°
+const TAP_MS = 300;
+const PADS = [0, 1].map(() => ({ f: 0, s: 0, turn: 0, turnHold: 0, run: false, keep: null, down: {} }));
 function padRefresh(p) {
   const P = PADS[p];
   document.querySelectorAll(`.tpad[data-p="${p}"] [data-pad]`).forEach((b) => {
     const a = b.dataset.pad;
-    const on = (a === 'fwd' && P.f === 1) || (a === 'back' && P.f === -1) || (a === 'left' && P.s === -1) ||
-               (a === 'right' && P.s === 1) || (a === 'run' && P.run);
+    const on = (a === 'fwd' && P.f === 1) || (a === 'back' && P.f === -1) || (a === 'left' && P.turnHold === 1) || (a === 'right' && P.turnHold === -1);
     b.classList.toggle('active', on);
   });
 }
-function padAction(p, a) {
-  const P = PADS[p];
-  if (a === 'fwd') P.f = P.f === 1 ? 0 : 1;
-  else if (a === 'back') P.f = P.f === -1 ? 0 : -1;
-  else if (a === 'left') P.s = P.s === -1 ? 0 : -1;
-  else if (a === 'right') P.s = P.s === 1 ? 0 : 1;
-  else if (a === 'turnL') P.turn += Math.PI / 4;
-  else if (a === 'turnR') P.turn -= Math.PI / 4;
-  else if (a === 'stop') { P.f = 0; P.s = 0; P.turn = 0; }
-  else if (a === 'run') P.run = !P.run;
+function padPress(p, a) {
+  const P = PADS[p]; P.down[a] = performance.now();
+  if (a === 'fwd' || a === 'back') P.f = a === 'fwd' ? 1 : -1;
+  else P.turnHold = a === 'left' ? 1 : -1;
   padRefresh(p);
 }
-function padReset(P) { P.f = 0; P.s = 0; P.turn = 0; PADS.forEach((_, i) => padRefresh(i)); }
+function padRelease(p, a) {
+  const P = PADS[p]; if (P.down[a] === undefined) return;
+  const quick = performance.now() - P.down[a] < TAP_MS; delete P.down[a];
+  if (a === 'fwd' || a === 'back') {
+    const dir = a === 'fwd' ? 1 : -1;
+    if (quick && P.keep !== a) { P.keep = a; P.f = dir; }      // tap: keep walking
+    else { P.keep = null; P.f = 0; }                           // tap again, or let go after holding: stop
+  } else {
+    P.turnHold = 0;
+    if (quick) P.turn += (a === 'left' ? 1 : -1) * Math.PI / 4; // tap: quick 45° turn
+  }
+  padRefresh(p);
+}
+function padReset(P) { P.f = 0; P.s = 0; P.turn = 0; P.turnHold = 0; P.keep = null; P.down = {}; PADS.forEach((_, i) => padRefresh(i)); }
 const PAD_HTML = (p, who) => `
   <div class="tpad" data-p="${p}">
     ${who ? `<div class="who">${who}</div>` : ''}
-    <button data-pad="turnL">⟲<small>turn</small></button>
-    <button data-pad="fwd">▲<small>walk</small></button>
-    <button data-pad="turnR">⟳<small>turn</small></button>
-    <button data-pad="left">◀<small>step</small></button>
-    <button data-pad="stop" class="stop">■<small>STOP</small></button>
-    <button data-pad="right">▶<small>step</small></button>
-    ${p === 0 ? '<button data-pad="run" class="run">RUN</button>' : '<span></span>'}
-    <button data-pad="back">▼<small>back</small></button>
-    <span></span>
+    <span></span><button data-pad="fwd">▲</button><span></span>
+    <button data-pad="left">◀</button><span></span><button data-pad="right">▶</button>
+    <span></span><button data-pad="back">▼</button><span></span>
   </div>`;
 const ACT_HTML = (p, acts) => `<div class="tacts" data-p="${p}">${acts.map(([a, label, cls]) => `<button data-act="${a}" class="${cls || ''}">${label}</button>`).join('')}</div>`;
 const ACTS_1P = [['hit', 'Hit', 'big'], ['kick', 'Kick', 'big'], ['punch', 'Punch'], ['legPunch', 'Leg<br>punch'], ['ultra', 'ULTRA', 'ultra'], ['jump', 'Jump'], ['door', 'Door']];
@@ -1008,7 +1012,26 @@ function buildTouchUI(layout) {
   };
   root.querySelectorAll('.tpad').forEach((pad) => {
     const p = +pad.dataset.p;
-    pad.querySelectorAll('[data-pad]').forEach((b) => tap(b, () => { if (G.state === 'play' && !G.paused) padAction(p, b.dataset.pad); }));
+    pad.querySelectorAll('[data-pad]').forEach((b) => {
+      const a = b.dataset.pad; let sawDown = false;
+      const ok = () => G.state === 'play' && !G.paused;
+      b.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); e.stopPropagation(); sawDown = true;
+        try { b.setPointerCapture(e.pointerId); } catch (err) {}
+        audio(); if (ok()) padPress(p, a);
+      });
+      const up = (e) => { e.preventDefault(); padRelease(p, a); };
+      b.addEventListener('pointerup', up);
+      b.addEventListener('pointercancel', up);
+      b.addEventListener('lostpointercapture', up);
+      // screens that only send clicks: treat a click as a quick tap
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (sawDown) { sawDown = false; return; }          // already handled by pointerdown/up
+        if (ok()) { padPress(p, a); padRelease(p, a); }    // click-only screen: a quick tap
+      });
+      b.addEventListener('contextmenu', (e) => e.preventDefault());
+    });
   });
   root.querySelectorAll('.tacts').forEach((box) => {
     const p = +box.dataset.p;
@@ -1038,6 +1061,7 @@ addEventListener('pointerdown', (e) => { if (e.pointerType === 'touch' || e.poin
 const joyR = () => innerHeight * 0.09;
 function touchDown(e) {
   enableTouch();
+  if (BIG) return; // big screen: movement only with the 4 arrow buttons
   if (G.state !== 'play' || G.paused || G.mode === 'duel') return;
   try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
   if (e.clientX < innerWidth * (SETTINGS.controls.joystickArea || 0) && TOUCH.joyId === null) {
@@ -1641,7 +1665,7 @@ function updateDuel(dt) {
   if (keys.ArrowUp) fw += 1; if (keys.ArrowDown) fw -= 0.7;
   fw += P.f;
   if (P.turn) { const st = Math.sign(P.turn) * Math.min(Math.abs(P.turn), 3.4 * dt); D2.yaw += st; P.turn -= st; }
-  D2.yaw += turn * 2.6 * dt;
+  D2.yaw += (turn + P.turnHold) * 2.6 * dt;
   const fx = Math.sin(D2.yaw), fz = Math.cos(D2.yaw);
   let speed = e.speed * clamp(fw, -0.7, 1);
   if (D2.charge > 0) { // charging dash
@@ -1756,6 +1780,7 @@ function updateMonkey(dt) {
   }
   const f = forward(), rgt = new THREE.Vector2(-f.y, f.x); // monkey's right
   fw += P.f; sd += P.s * 0.85;
+  M.yaw += P.turnHold * S.turnSpeed * 0.8 * dt;
   if (P.turn) { const st = Math.sign(P.turn) * Math.min(Math.abs(P.turn), S.turnSpeed * 1.4 * dt); M.yaw += st; P.turn -= st; }
   const joyRun = TOUCH.joyId !== null && Math.hypot(TOUCH.move.x, TOUCH.move.y) > 0.92 && -TOUCH.move.y > 0.5;
   const run = ((keys.ShiftLeft || (!duel && keys.ShiftRight) || P.run) && fw > 0) || joyRun ? SETTINGS.controls.runMultiplier : 1;

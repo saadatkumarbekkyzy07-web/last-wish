@@ -194,11 +194,11 @@
   #knob{position:absolute;left:50%;top:50%;width:42%;height:42%;border-radius:50%;background:rgba(255,214,107,.85);transform:translate(-50%,-50%)}
   .tcluster{position:fixed;bottom:2.5vh;display:flex;align-items:flex-end;gap:2vh;pointer-events:auto}
   .tcluster.right{right:2.5vh} .tcluster.left{left:2.5vh}
-  .tpad{position:relative;display:grid;grid-template-columns:repeat(3,12vh);grid-template-rows:repeat(3,12vh);gap:1.2vh}
+  .tpad{position:relative;display:grid;grid-template-columns:repeat(3,13vh);grid-template-rows:repeat(3,13vh);gap:1.2vh}
   .tpad .who{position:absolute;top:-5vh;left:0;right:0;text-align:center;font-family:Fredoka;font-weight:700;font-size:2.6vh;color:var(--moon);text-shadow:0 2px 6px #000}
   .tpad button,.tacts button,#tpause{border:3px solid var(--line);background:rgba(10,12,30,.62);color:var(--ink);font-family:Fredoka,sans-serif;font-weight:700;
     touch-action:none;user-select:none;-webkit-user-select:none;display:flex;align-items:center;justify-content:center;flex-direction:column;line-height:1}
-  .tpad button{border-radius:2.2vh;font-size:4.4vh}
+  .tpad button{border-radius:2.2vh;font-size:5.6vh;touch-action:none;user-select:none;-webkit-user-select:none}
   .tpad button small{font-size:1.5vh;font-weight:600;margin-top:.4vh}
   .tpad button.active{background:rgba(255,214,107,.9);color:#2a1d00;border-color:#fff}
   .tpad .stop{background:rgba(224,72,62,.75);font-size:3.6vh}
@@ -300,9 +300,8 @@
     <span class="laptopOnly"><kbd>R</kbd></span><span class="laptopOnly">ULTRA — kills every cockroach nearby</span>
     <span class="laptopOnly"><kbd>E</kbd></span><span class="laptopOnly">open / close a door (nights 3 and 4)</span>
     <span class="laptopOnly"><kbd>Esc</kbd> / <kbd>P</kbd></span><span class="laptopOnly">pause</span>
-    <span class="bigOnly"><b>▲ ▼</b></span><span class="bigOnly">tap to start walking forward / back (tap again to stop)</span>
-    <span class="bigOnly"><b>⟲ ⟳ / ◀ ▶</b></span><span class="bigOnly">turn 45° per tap / step sideways</span>
-    <span class="bigOnly"><b>■ STOP · RUN</b></span><span class="bigOnly">stop moving · run on / off</span>
+    <span class="bigOnly"><b>▲ ▼</b></span><span class="bigOnly">walk forward / back: hold, or tap to keep walking (tap again to stop)</span>
+    <span class="bigOnly"><b>◀ ▶</b></span><span class="bigOnly">turn left / right: hold to keep turning, tap for a quick turn</span>
     <span class="bigOnly"><b>Hit · Kick</b></span><span class="bigOnly">1 damage (kick: up to 2 cockroaches)</span>
     <span class="bigOnly"><b>Punch · Leg punch</b></span><span class="bigOnly">push away · 2 damage</span>
     <span class="bigOnly"><b>ULTRA · Jump · Door</b></span><span class="bigOnly">kill all nearby · jump · open doors</span>
