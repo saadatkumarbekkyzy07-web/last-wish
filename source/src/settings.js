@@ -34,11 +34,11 @@ export const SETTINGS = {
   },
 
   // ---------- CAMERA (behind the monkey) ----------
-  // Walls, doors and furniture between the camera and the monkey become see-through,
-  // so the camera can stay back and show the area around the monkey.
+  // Walls and doors stop the camera (you see into a room only through its open door).
+  // Furniture between the camera and the monkey becomes see-through.
   camera: {
-    distance: 2.3,           // how far behind the monkey (metres). Bigger = see more around it
-    height: 1.6,             // how high above the floor (metres). Bigger = looks down more, like a map
+    distance: 1.9,           // how far behind the monkey (metres). Bigger = see more around it
+    height: 1.15,            // how high above the floor (metres). Bigger = looks down more
   },
   // ---------- DISPLAY (big screens, video walls) ----------
   display: {

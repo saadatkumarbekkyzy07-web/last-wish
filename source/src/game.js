@@ -47,8 +47,9 @@ scene.fog = new THREE.Fog(0x05060f, 6, 16);
 const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.05, 60);
 // set a camera's shape for the part of the screen it draws into
 function fitCam(cam, a) {
-  const maxH = THREE.MathUtils.degToRad(DISPLAY.maxHorizontalFov);
-  const fov = THREE.MathUtils.radToDeg(Math.min(THREE.MathUtils.degToRad(62), 2 * Math.atan(Math.tan(maxH / 2) / a)));
+  const boost = (G.state === 'play' || G.state === 'duel') ? (cam.userData.boost || 0) : 0; // wider lens in tight spots
+  const maxH = THREE.MathUtils.degToRad(Math.min(150, DISPLAY.maxHorizontalFov + boost * 1.4));
+  const fov = THREE.MathUtils.radToDeg(Math.min(THREE.MathUtils.degToRad(62 + boost), 2 * Math.atan(Math.tan(maxH / 2) / a)));
   if (cam.aspect !== a || cam.fov !== fov) { cam.aspect = a; cam.fov = fov; cam.updateProjectionMatrix(); }
 }
 // On very wide screens keep the side-to-side view angle sensible (no fish-eye stretching)
@@ -625,6 +626,16 @@ async function loadAll() {
   scene.add(apt.scene);
   buildRooms(apt.scene);
   collectCameraBlockers(apt.scene);
+  // a plain ceiling on top of the walls (the model has none: the top of the screen showed black)
+  {
+    const wb = new THREE.Box3(); wallBlockers.forEach((o) => { if (o.material && /^T_Wall/.test(o.material.name)) wb.expandByObject(o); });
+    if (!wb.isEmpty()) {
+      const ceil = new THREE.Mesh(new THREE.PlaneGeometry(wb.max.x - wb.min.x + 0.4, wb.max.z - wb.min.z + 0.4),
+        (() => { const w = wallBlockers.find((o) => o.material && o.material.name === 'T_Wall'); const m = w ? w.material.clone() : new THREE.MeshLambertMaterial({ color: 0xf3ede4 }); m.side = THREE.DoubleSide; return m; })());
+      ceil.rotation.x = Math.PI / 2; ceil.position.set((wb.min.x + wb.max.x) / 2, wb.max.y - 0.01, (wb.min.z + wb.max.z) / 2);
+      ceil.name = 'Ceiling_added'; scene.add(ceil);
+    }
+  }
   // animation library (from the monkey file), converted for each character's skeleton
   const need = neededClips();
   const lib = F.monkey.animations.filter((c) => need.has(c.name));
@@ -1850,7 +1861,7 @@ function updateMonkey(dt) {
 //  If a wall, door or piece of furniture is in between, the camera moves
 //  in front of it (and rises a little so the monkey stays in view).
 // ---------------------------------------------------------------------
-const camBlockers = [];
+const camBlockers = [], wallBlockers = [];
 const camRay = new THREE.Raycaster();
 function collectCameraBlockers(root) {
   const skip = /Floor|Rug|Carpet|Ceil|Light|Lamp|Glass|Outline/i;
@@ -1866,9 +1877,20 @@ function collectCameraBlockers(root) {
   root.traverse(add);
   ROOMS.forEach((R) => R.pivot && R.pivot.traverse(add)); // doors (they swing, so they're checked live)
   // see-through: a wall/door/furniture piece fades as one unit (its outline included)
+  // walls, doors, windows = structure: never see-through, the camera stays in front of them
+  const STRUCT = /^T_(Wall|TileWall|DoorFrame|DoorWood|DoorPlain|Hinge|WinFrame|WindowDark|Blind|Cream|Chain|VentBack|Mirror|Grass|PanelCream|PanelDark|PanelBreakers)/;
+  const structural = (o) => {
+    let u = o; const par = o.parent;
+    if (par && par !== root && !par.isScene && par.children.length <= 8 && par.children.every((c) => c.isMesh)) u = par;
+    let st = ROOMS.some((R) => R.pivot && (u === R.pivot || u.parent === R.pivot || o.parent === R.pivot));
+    u.traverse((m) => { if (m.isMesh && m.material && STRUCT.test(m.material.name || '')) st = true; });
+    return st;
+  };
+  wallBlockers.length = 0;
+  for (const o of camBlockers) if (structural(o)) wallBlockers.push(o);
   FADE.units.clear(); FADE.byMesh.clear(); FADE.meshes.length = 0;
   const fadeable = [];
-  const addF = (o) => { if (o.isMesh && !/Floor|Rug|Carpet|Ceil|Skirt|Plinth/i.test(o.name + ' ' + (o.parent ? o.parent.name : '')) && !(o.material && (o.material.name === 'T_Outline' || o.material.name === 'T_Ink'))) fadeable.push(o); };
+  const addF = (o) => { if (o.isMesh && !/Floor|Rug|Carpet|Ceil|Skirt|Plinth/i.test(o.name + ' ' + (o.parent ? o.parent.name : '')) && !(o.material && (o.material.name === 'T_Outline' || o.material.name === 'T_Ink')) && !structural(o)) fadeable.push(o); };  // furniture only
   root.traverse(addF); ROOMS.forEach((R) => R.pivot && R.pivot.traverse(addF));
   FADE.meshes.push(...fadeable);
   for (const o of fadeable) {
@@ -1880,24 +1902,6 @@ function collectCameraBlockers(root) {
       FADE.units.set(u, { obj: u, meshes, orig: meshes.map((m) => m.material), fade: null, shown: 1, box: new THREE.Box3().setFromObject(u), moving });
     }
     FADE.byMesh.set(o, FADE.units.get(u));
-  }
-  // each room's front wall (the wall with its door): see-through while that door is open
-  const bx = new THREE.Box3();
-  for (const R of ROOMS) {
-    R.frontUnits = [];
-    const ux = R.doorPos.x - R.hinge.x, uz = R.doorPos.y - R.hinge.y, ul = Math.hypot(ux, uz) || 1;
-    const along = Math.abs(ux / ul) > 0.5;                       // the wall runs along x (else along z)
-    const r = along ? { x0: R.doorPos.x - 1.7, x1: R.doorPos.x + 1.7, z0: R.doorPos.y - 0.3, z1: R.doorPos.y + 0.3 }
-                    : { x0: R.doorPos.x - 0.3, x1: R.doorPos.x + 0.3, z0: R.doorPos.y - 1.7, z1: R.doorPos.y + 1.7 };
-    for (const [u, info] of FADE.units) {
-      const nm = u.name + ' ' + (u.parent ? u.parent.name : '');
-      bx.setFromObject(u);
-      const isDoor = R.pivot && (u === R.pivot || u.parent === R.pivot);
-      if (!isDoor && !/Wall/i.test(nm)) continue;
-      if (bx.max.x < r.x0 || bx.min.x > r.x1 || bx.max.z < r.z0 || bx.min.z > r.z1) continue;
-      if (!isDoor && Math.min(bx.max.x - bx.min.x, bx.max.z - bx.min.z) > 0.4) continue; // only thin wall pieces
-      R.frontUnits.push(info);
-    }
   }
 }
 
@@ -1931,11 +1935,7 @@ function updateFade(key, cp, st, dt) {
   // anything right next to the camera would fill the picture: see-through too
   for (const u of FADE.units.values()) {
     if (u.moving) u.box.setFromObject(u.obj);
-    if (u.box.distanceToPoint(cp) < 1.0) hit.add(u);
-  }
-  // an open door near the character: show the whole room behind it
-  for (const R of ROOMS) {
-    if (R.openAmt > 0.3 && R.frontUnits && Math.hypot(P.x - R.doorPos.x, P.z - R.doorPos.y) < 2.6) R.frontUnits.forEach((u) => hit.add(u));
+    if (u.box.distanceToPoint(cp) < 0.8) hit.add(u);
   }
   const want = FADE.want[key], k = dt > 0 ? Math.min(1, dt * 9) : 1;
   hit.forEach((u) => { if (!want.has(u)) want.set(u, 1); });
@@ -1983,11 +1983,11 @@ function camHit(from, dir, far) {
   let best = far;
   camRay.far = far; camRay.near = 0;
   camRay.set(from, dir);
-  const a = camRay.intersectObjects(camBlockers, false); if (a.length) best = Math.min(best, a[0].distance);
+  const a = camRay.intersectObjects(wallBlockers, false); if (a.length) best = Math.min(best, a[0].distance);
   // also cast backwards: catches one-sided walls that face away from the monkey
   _v1.copy(from).addScaledVector(dir, far); _v2.copy(dir).negate();
   camRay.set(_v1, _v2);
-  const b = camRay.intersectObjects(camBlockers, false); if (b.length) best = Math.min(best, far - b[b.length - 1].distance);
+  const b = camRay.intersectObjects(wallBlockers, false); if (b.length) best = Math.min(best, far - b[b.length - 1].distance);
   return best;
 }
 // follow a character from behind; st = { pos, yaw, pitch, y, ground }
@@ -1995,13 +1995,30 @@ function followCam(cam, st, cp, cl, dt, key = 'p1') {
   const f = new THREE.Vector2(Math.sin(st.yaw), Math.cos(st.yaw));
   const pitch = st.pitch || 0, y = st.y || 0, ground = st.ground || 0;
   const V = SETTINGS.camera || {};
-  const dist = (V.distance ?? 2.3) - pitch * 0.6, h = (V.height ?? 1.6) + pitch * 1.1;
+  const dist = (V.distance ?? 1.9) - pitch * 0.5, h = (V.height ?? 1.15) + pitch * 0.9;
   const lift = ground + (y - ground) * 0.5;
-  const target = new THREE.Vector3(st.pos.x - f.x * dist, h + lift, st.pos.z - f.y * dist);
-  cp.lerp(target, dt > 0 ? 1 - Math.pow(0.0008, dt) : 1);
-  cl.set(st.pos.x + f.x * 0.9, 0.22 - pitch * 0.2 + lift + (y - lift) * 0.6, st.pos.z + f.y * 0.9);
+  const head = new THREE.Vector3(st.pos.x, lift + y * 0.5 + 0.45, st.pos.z);
+  const want = new THREE.Vector3(st.pos.x - f.x * dist, h + lift, st.pos.z - f.y * dist);
+  const dir = want.clone().sub(head); const full = dir.length(); dir.normalize();
+  // walls and doors stop the camera (so you never look through them into other rooms)
+  const free = camHit(head, dir, full);
+  const keep = Math.max(0.22, free - 0.12);
+  const target = head.clone().addScaledVector(dir, keep);
+  const squeeze = clamp(1 - keep / full, 0, 1);     // close to a wall: go up a little, use a wider lens
+  target.y += squeeze * 0.3;
+  cam.userData.boost = (cam.userData.boost || 0) + (squeeze * 22 - (cam.userData.boost || 0)) * (dt > 0 ? Math.min(1, dt * 4) : 1);
+  cp.lerp(target, dt > 0 ? 1 - Math.pow(0.0005, dt) : 1);
+  const d2 = cp.clone().sub(head); const len2 = d2.length();
+  if (len2 > 0.01) {                                // smoothing must never drag the camera through a wall
+    d2.normalize();
+    const free2 = camHit(head, d2, len2);
+    if (free2 < len2) cp.copy(head).addScaledVector(d2, Math.max(0.18, free2 - 0.1));
+  }
+  // keep looking ahead (through a doorway), not down at the monkey's head
+  const ahead = 0.7 + 0.9 * squeeze;
+  cl.set(st.pos.x + f.x * ahead, 0.36 + 0.25 * squeeze - pitch * 0.15 + lift + (y - lift) * 0.6, st.pos.z + f.y * ahead);
   cam.position.copy(cp); cam.lookAt(cl);
-  updateFade(key, cp, st, dt);   // walls in the way turn see-through instead of pushing the camera in
+  updateFade(key, cp, st, dt);   // furniture in the way (chairs, curtains...) turns see-through
 }
 function updateCamera(dt) {
   const t = performance.now();
