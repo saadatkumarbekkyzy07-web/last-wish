@@ -27081,26 +27081,6 @@ var SETTINGS = {
     const obj = cloneWithMaterials(kind === "mega" ? T.mega : T.roach);
     const sz = obj.userData.size;
     addShadow(obj, Math.max(sz.x, sz.z) * 0.6);
-    const eyeMat = new MeshBasicMaterial({ color: kind === "mega" ? 16724016 : 16752704 });
-    obj.updateMatrixWorld(true);
-    let head = null;
-    obj.traverse((b) => {
-      if (b.isBone && /Head$/.test(b.name) && !head) head = b;
-    });
-    [-1, 1].forEach((s) => {
-      const e2 = new Mesh(new SphereGeometry(kind === "mega" ? 0.022 : 0.013, 8, 6), eyeMat);
-      const wp = new Vector3(s * sz.x * 0.16, sz.y * 0.84, sz.z * 0.48);
-      if (head) {
-        head.worldToLocal(wp);
-        e2.position.copy(wp);
-        const ws = head.getWorldScale(new Vector3());
-        e2.scale.setScalar(1 / ws.x);
-        head.add(e2);
-      } else {
-        e2.position.copy(wp);
-        obj.children[0].add(e2);
-      }
-    });
     const amap = SETTINGS.animations[kind === "mega" ? "mega" : "cockroach"];
     const clips = kind === "mega" ? T.clips.mega : T.clips.roach;
     const animator = new Animator(obj, clips, amap, obj.userData.scale);
@@ -27735,19 +27715,12 @@ var SETTINGS = {
     v.volume = SETTINGS.videoVolume ?? 0.8;
     v.src = SETTINGS.videos[kind];
     const bg = $("vbg");
-    bg.src = SETTINGS.videos[kind];
-    bg.muted = true;
+    bg.pause();
+    bg.removeAttribute("src");
     bg.style.display = "none";
-    v.onplaying = () => {
-      if (id !== storyToken) return;
-      bg.currentTime = v.currentTime;
-      bg.style.display = "block";
-      bg.play().catch(() => {
-      });
-    };
-    v.ontimeupdate = () => {
-      if (Math.abs(bg.currentTime - v.currentTime) > 0.3) bg.currentTime = v.currentTime;
-    };
+    v.preload = "auto";
+    v.onplaying = null;
+    v.ontimeupdate = null;
     v.oncanplay = () => {
       if (id !== storyToken) return;
       v.oncanplay = null;
@@ -28201,7 +28174,7 @@ var SETTINGS = {
   }
   function play1p() {
     audio();
-    if (!SAVE.introSeen) playStory("intro", () => {
+    if (BIG || !SAVE.introSeen) playStory("intro", () => {
       SAVE.introSeen = true;
       saveGame();
       showMap();

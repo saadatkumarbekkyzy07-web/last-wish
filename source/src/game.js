@@ -740,18 +740,6 @@ function spawnEnemy(kind, hidden, at) {
   const obj = cloneWithMaterials(kind === 'mega' ? T.mega : T.roach);
   const sz = obj.userData.size;
   addShadow(obj, Math.max(sz.x, sz.z) * 0.6);
-  // glowing eyes, so you can find them in the dark
-  const eyeMat = new THREE.MeshBasicMaterial({ color: kind === 'mega' ? 0xff3030 : 0xffa040 });
-  obj.updateMatrixWorld(true);
-  let head = null; obj.traverse((b) => { if (b.isBone && /Head$/.test(b.name) && !head) head = b; });
-  [-1, 1].forEach((s) => {
-    const e = new THREE.Mesh(new THREE.SphereGeometry(kind === 'mega' ? 0.022 : 0.013, 8, 6), eyeMat);
-    const wp = new THREE.Vector3(s * sz.x * 0.16, sz.y * 0.84, sz.z * 0.48);
-    if (head) { // stick the eyes to the head bone so they follow the animation
-      head.worldToLocal(wp); e.position.copy(wp);
-      const ws = head.getWorldScale(new THREE.Vector3()); e.scale.setScalar(1 / ws.x); head.add(e);
-    } else { e.position.copy(wp); obj.children[0].add(e); }
-  });
   const amap = SETTINGS.animations[kind === 'mega' ? 'mega' : 'cockroach'];
   const clips = kind === 'mega' ? T.clips.mega : T.clips.roach;
   const animator = new Animator(obj, clips, amap, obj.userData.scale); animator.alwaysWalk = true;
@@ -1180,9 +1168,11 @@ function playStory(kind, done, style = storyStyle) {
   v.onerror = () => { if (id === storyToken && v.getAttribute('src')) startSlides(SLIDES[kind]); };
   v.muted = false; v.volume = SETTINGS.videoVolume ?? 0.8;
   v.src = SETTINGS.videos[kind];
-  const bg = $('vbg'); bg.src = SETTINGS.videos[kind]; bg.muted = true; bg.style.display = 'none';
-  v.onplaying = () => { if (id !== storyToken) return; bg.currentTime = v.currentTime; bg.style.display = 'block'; bg.play().catch(() => {}); };
-  v.ontimeupdate = () => { if (Math.abs(bg.currentTime - v.currentTime) > 0.3) bg.currentTime = v.currentTime; };
+  // the big screen's videos are already 32:9 (full screen), so no blurred copy behind them:
+  // decoding one 7680x2160 video is enough work for the computer
+  const bg = $('vbg'); bg.pause(); bg.removeAttribute('src'); bg.style.display = 'none';
+  v.preload = 'auto';
+  v.onplaying = null; v.ontimeupdate = null;
   v.oncanplay = () => {
     if (id !== storyToken) return;
     v.oncanplay = null; v.style.display = 'block';
@@ -1464,7 +1454,8 @@ function toTitle() {
 }
 function play1p() {
   audio();
-  if (!SAVE.introSeen) playStory('intro', () => { SAVE.introSeen = true; saveGame(); showMap(); });
+  // big screen: every new player sees the intro (Skip is always there); laptop: only the first time
+  if (BIG || !SAVE.introSeen) playStory('intro', () => { SAVE.introSeen = true; saveGame(); showMap(); });
   else showMap();
 }
 const MAP_POINTS = [[11, 80], [30, 68], [50, 77], [71, 66], [82, 40], [59, 30], [35, 24], [13, 32]];

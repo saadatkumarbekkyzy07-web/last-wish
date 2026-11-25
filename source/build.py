@@ -30,6 +30,8 @@ for ed in only:
     shutil.copytree(f'{V2}/models', f'{out}/models')
     shutil.copytree(f'{V2}/images', f'{out}/images')
     shutil.copytree('/home/claude/game/videos', f'{out}/videos', ignore=shutil.ignore_patterns('*.txt'))
+    if ed == 'bigscreen':  # the big screen gets the 32:9 (7680x2160) versions of the story videos
+        for v in ('intro', 'ending', 'ending_bad'): shutil.copy(f'/home/claude/vproj/out/{v}.mp4', f'{out}/videos/{v}.mp4')
     html = page.replace('<!--GAME-->', pre + '<script>\n' + bundle + '\n</script>')
     if ed == 'bigscreen': html = html.replace('<title>Last Wish</title>', '<title>Last Wish — Big Screen</title>')
     open(f'{out}/{fname}', 'w').write(html)
