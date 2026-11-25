@@ -1865,6 +1865,117 @@ function collectCameraBlockers(root) {
   };
   root.traverse(add);
   ROOMS.forEach((R) => R.pivot && R.pivot.traverse(add)); // doors (they swing, so they're checked live)
+  // see-through: a wall/door/furniture piece fades as one unit (its outline included)
+  FADE.units.clear(); FADE.byMesh.clear(); FADE.meshes.length = 0;
+  const fadeable = [];
+  const addF = (o) => { if (o.isMesh && !/Floor|Rug|Carpet|Ceil|Skirt|Plinth/i.test(o.name + ' ' + (o.parent ? o.parent.name : '')) && !(o.material && (o.material.name === 'T_Outline' || o.material.name === 'T_Ink'))) fadeable.push(o); };
+  root.traverse(addF); ROOMS.forEach((R) => R.pivot && R.pivot.traverse(addF));
+  FADE.meshes.push(...fadeable);
+  for (const o of fadeable) {
+    let u = o; const par = o.parent;
+    if (par && par !== root && !par.isScene && par.children.length <= 8 && par.children.every((c) => c.isMesh)) u = par;
+    if (!FADE.units.has(u)) {
+      const meshes = []; u.traverse((m) => { if (m.isMesh) meshes.push(m); });
+      const moving = ROOMS.some((R) => R.pivot && (u === R.pivot || u.parent === R.pivot || o.parent === R.pivot));
+      FADE.units.set(u, { obj: u, meshes, orig: meshes.map((m) => m.material), fade: null, shown: 1, box: new THREE.Box3().setFromObject(u), moving });
+    }
+    FADE.byMesh.set(o, FADE.units.get(u));
+  }
+  // each room's front wall (the wall with its door): see-through while that door is open
+  const bx = new THREE.Box3();
+  for (const R of ROOMS) {
+    R.frontUnits = [];
+    const ux = R.doorPos.x - R.hinge.x, uz = R.doorPos.y - R.hinge.y, ul = Math.hypot(ux, uz) || 1;
+    const along = Math.abs(ux / ul) > 0.5;                       // the wall runs along x (else along z)
+    const r = along ? { x0: R.doorPos.x - 1.7, x1: R.doorPos.x + 1.7, z0: R.doorPos.y - 0.3, z1: R.doorPos.y + 0.3 }
+                    : { x0: R.doorPos.x - 0.3, x1: R.doorPos.x + 0.3, z0: R.doorPos.y - 1.7, z1: R.doorPos.y + 1.7 };
+    for (const [u, info] of FADE.units) {
+      const nm = u.name + ' ' + (u.parent ? u.parent.name : '');
+      bx.setFromObject(u);
+      const isDoor = R.pivot && (u === R.pivot || u.parent === R.pivot);
+      if (!isDoor && !/Wall/i.test(nm)) continue;
+      if (bx.max.x < r.x0 || bx.min.x > r.x1 || bx.max.z < r.z0 || bx.min.z > r.z1) continue;
+      if (!isDoor && Math.min(bx.max.x - bx.min.x, bx.max.z - bx.min.z) > 0.4) continue; // only thin wall pieces
+      R.frontUnits.push(info);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
+//  SEE-THROUGH WALLS: the camera stays far enough back to show the area
+//  around the monkey; any wall, door or furniture between the camera and
+//  the monkey becomes see-through (like a doll's house).
+// ---------------------------------------------------------------------
+const FADE = { meshes: [], units: new Map(), byMesh: new Map(), want: { p1: new Map(), p2: new Map() }, ghost: 0.14 };
+const fadeRay = new THREE.Raycaster();
+const _fd = new THREE.Vector3(), _fo = new THREE.Vector3();
+function fadeHits(from, to, set) {
+  _fd.copy(to).sub(from); const len = _fd.length(); if (len < 0.05) return; _fd.divideScalar(len);
+  fadeRay.near = 0; fadeRay.far = len - 0.08;
+  fadeRay.set(from, _fd);
+  for (const h of fadeRay.intersectObjects(FADE.meshes, false)) { const u = FADE.byMesh.get(h.object); if (u) set.add(u); }
+  _fo.copy(to).addScaledVector(_fd, -0.08); _fd.negate();             // and back again (one-sided walls)
+  fadeRay.far = len - 0.08; fadeRay.set(_fo, _fd);
+  for (const h of fadeRay.intersectObjects(FADE.meshes, false)) { const u = FADE.byMesh.get(h.object); if (u) set.add(u); }
+}
+// which pieces hide the character (seen from camera `cp`); smooth fade in/out
+function updateFade(key, cp, st, dt) {
+  const f = new THREE.Vector2(Math.sin(st.yaw), Math.cos(st.yaw));
+  const y = st.y || 0, P = st.pos;
+  const pts = [
+    new THREE.Vector3(P.x, y + 0.45, P.z), new THREE.Vector3(P.x, y + 0.08, P.z),
+    new THREE.Vector3(P.x + f.y * 0.45, y + 0.25, P.z - f.x * 0.45), new THREE.Vector3(P.x - f.y * 0.45, y + 0.25, P.z + f.x * 0.45),
+  ];
+  pts.push(new THREE.Vector3(P.x + f.y * 0.9, y + 0.3, P.z - f.x * 0.9), new THREE.Vector3(P.x - f.y * 0.9, y + 0.3, P.z + f.x * 0.9));
+  const hit = new Set(); pts.forEach((pt) => fadeHits(cp, pt, hit));
+  // anything right next to the camera would fill the picture: see-through too
+  for (const u of FADE.units.values()) {
+    if (u.moving) u.box.setFromObject(u.obj);
+    if (u.box.distanceToPoint(cp) < 1.0) hit.add(u);
+  }
+  // an open door near the character: show the whole room behind it
+  for (const R of ROOMS) {
+    if (R.openAmt > 0.3 && R.frontUnits && Math.hypot(P.x - R.doorPos.x, P.z - R.doorPos.y) < 2.6) R.frontUnits.forEach((u) => hit.add(u));
+  }
+  const want = FADE.want[key], k = dt > 0 ? Math.min(1, dt * 9) : 1;
+  hit.forEach((u) => { if (!want.has(u)) want.set(u, 1); });
+  for (const [u, v] of want) {
+    const target = hit.has(u) ? FADE.ghost : 1;
+    const nv = v + (target - v) * k;
+    if (nv > 0.995 && target === 1) want.delete(u); else want.set(u, nv);
+  }
+}
+// show the fades of one camera (null = everything solid again)
+function applyFade(key) {
+  const want = key ? FADE.want[key] : null;
+  for (const u of FADE.units.values()) {
+    const v = want ? (want.get(u) ?? 1) : 1;
+    if (v >= 0.995) {
+      if (u.shown !== 1) { u.meshes.forEach((m, i) => { m.material = u.orig[i]; m.visible = true; }); u.shown = 1; }
+      continue;
+    }
+    if (!u.fade) u.fade = u.orig.map((om) => {
+      const one = (mm) => {
+        const c = mm.clone(); c.transparent = true; c.depthWrite = false;
+        if (mm.onBeforeCompile) { c.onBeforeCompile = mm.onBeforeCompile; c.customProgramCacheKey = () => (mm.customProgramCacheKey ? mm.customProgramCacheKey() : '') + '_fade'; }
+        return c;
+      };
+      return Array.isArray(om) ? om.map(one) : one(om);
+    });
+    u.meshes.forEach((m, i) => {
+      const om = u.orig[i], fm = u.fade[i];
+      const outline = !Array.isArray(om) && (om.name === 'T_Outline' || om.name === 'T_Ink');
+      if (outline) { m.visible = v > 0.92; return; }          // outlines just disappear
+      m.material = fm;
+      (Array.isArray(fm) ? fm : [fm]).forEach((c, j) => {
+        const o = Array.isArray(om) ? om[j] : om;
+        c.opacity = v * (o.opacity ?? 1);
+        if (o.emissiveIntensity !== undefined) c.emissiveIntensity = o.emissiveIntensity; // follows the night lighting
+        if (o.color) c.color.copy(o.color);
+      });
+    });
+    u.shown = v;
+  }
 }
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3();
 // distance from `from` along `dir` (unit) to the first blocker, or `far` if nothing is in the way
@@ -1880,30 +1991,17 @@ function camHit(from, dir, far) {
   return best;
 }
 // follow a character from behind; st = { pos, yaw, pitch, y, ground }
-function followCam(cam, st, cp, cl, dt) {
+function followCam(cam, st, cp, cl, dt, key = 'p1') {
   const f = new THREE.Vector2(Math.sin(st.yaw), Math.cos(st.yaw));
   const pitch = st.pitch || 0, y = st.y || 0, ground = st.ground || 0;
-  const dist = 1.45 - pitch * 0.5, h = 0.95 + pitch * 0.9;
+  const V = SETTINGS.camera || {};
+  const dist = (V.distance ?? 2.3) - pitch * 0.6, h = (V.height ?? 1.6) + pitch * 1.1;
   const lift = ground + (y - ground) * 0.5;
-  const head = new THREE.Vector3(st.pos.x, lift + y * 0.5 + 0.45, st.pos.z);
-  const want = new THREE.Vector3(st.pos.x - f.x * dist, h + lift, st.pos.z - f.y * dist);
-  const dir = want.clone().sub(head); const full = dir.length(); dir.normalize();
-  const free = camHit(head, dir, full);
-  const keep = Math.max(0.22, free - 0.12);
-  const target = head.clone().addScaledVector(dir, keep);
-  // squeezed close to a wall? go up a bit and look down at the character instead
-  const squeeze = clamp(1 - keep / full, 0, 1);
-  target.y += squeeze * 0.55;
-  cp.lerp(target, 1 - Math.pow(0.0005, dt));
-  // smoothing must never drag the camera through a wall: check the final spot too
-  const d2 = cp.clone().sub(head); const len2 = d2.length();
-  if (len2 > 0.01) {
-    d2.normalize();
-    const free2 = camHit(head, d2, len2);
-    if (free2 < len2) cp.copy(head).addScaledVector(d2, Math.max(0.18, free2 - 0.1));
-  }
-  cl.set(st.pos.x + f.x * 0.6 * (1 - squeeze), 0.38 - pitch * 0.15 + lift + (y - lift) * 0.6, st.pos.z + f.y * 0.6 * (1 - squeeze));
+  const target = new THREE.Vector3(st.pos.x - f.x * dist, h + lift, st.pos.z - f.y * dist);
+  cp.lerp(target, dt > 0 ? 1 - Math.pow(0.0008, dt) : 1);
+  cl.set(st.pos.x + f.x * 0.9, 0.22 - pitch * 0.2 + lift + (y - lift) * 0.6, st.pos.z + f.y * 0.9);
   cam.position.copy(cp); cam.lookAt(cl);
+  updateFade(key, cp, st, dt);   // walls in the way turn see-through instead of pushing the camera in
 }
 function updateCamera(dt) {
   const t = performance.now();
@@ -1931,7 +2029,7 @@ function updateCamera(dt) {
   followCam(camera, M, camPos, camLook, dt);
   if (G.mode === 'duel' && D2.e) {
     const e = D2.e;
-    followCam(camera2, { pos: e.pos, yaw: D2.yaw, pitch: 0.12, y: e.y || 0, ground: e.y || 0 }, D2.camPos, D2.camLook, dt);
+    followCam(camera2, { pos: e.pos, yaw: D2.yaw, pitch: 0.12, y: e.y || 0, ground: e.y || 0 }, D2.camPos, D2.camLook, dt, 'p2');
   }
 }
 
@@ -2130,11 +2228,11 @@ function loop(now) {
   const w = innerWidth, h = innerHeight;
   if (split && D2.e) { // two players: left half = monkey, right half = mega cockroach
     renderer.setScissorTest(true);
-    fitCam(camera, (w / 2) / h); renderer.setViewport(0, 0, w / 2, h); renderer.setScissor(0, 0, w / 2, h); renderer.render(scene, camera);
-    fitCam(camera2, (w / 2) / h); renderer.setViewport(w / 2, 0, w / 2, h); renderer.setScissor(w / 2, 0, w / 2, h); renderer.render(scene, camera2);
+    applyFade('p1'); fitCam(camera, (w / 2) / h); renderer.setViewport(0, 0, w / 2, h); renderer.setScissor(0, 0, w / 2, h); renderer.render(scene, camera);
+    applyFade('p2'); fitCam(camera2, (w / 2) / h); renderer.setViewport(w / 2, 0, w / 2, h); renderer.setScissor(w / 2, 0, w / 2, h); renderer.render(scene, camera2);
     renderer.setScissorTest(false); renderer.setViewport(0, 0, w, h);
   } else {
-    fitCam(camera, w / h); renderer.render(scene, camera);
+    applyFade(titleCam ? null : 'p1'); fitCam(camera, w / h); renderer.render(scene, camera);
   }
 }
 
@@ -2158,4 +2256,4 @@ function loop(now) {
 })();
 
 // handy for testing in the browser console
-window.__game = { duelEnd, G, M, SAVE, SETTINGS, scene, camera, spawnEnemy, showFact, beginNight, showMap, showMarket, startDuel, duelSetup, nightComplete, monkeyDown, setCostume, T, D2, PADS, attack, duelAttack, toTitle, quizStageIntro, startQuiz, finishQuiz, keys };
+window.__game = { ROOMS, duelEnd, G, M, SAVE, SETTINGS, scene, camera, spawnEnemy, showFact, beginNight, showMap, showMarket, startDuel, duelSetup, nightComplete, monkeyDown, setCostume, T, D2, PADS, attack, duelAttack, toTitle, quizStageIntro, startQuiz, finishQuiz, keys };

@@ -25861,6 +25861,15 @@ var SETTINGS = {
       joystickArea: 0.35
       // left part of the screen (0.35 = 35%) where a touch starts the walking joystick
     },
+    // ---------- CAMERA (behind the monkey) ----------
+    // Walls, doors and furniture between the camera and the monkey become see-through,
+    // so the camera can stay back and show the area around the monkey.
+    camera: {
+      distance: 2.3,
+      // how far behind the monkey (metres). Bigger = see more around it
+      height: 1.6
+      // how high above the floor (metres). Bigger = looks down more, like a map
+    },
     // ---------- DISPLAY (big screens, video walls) ----------
     display: {
       maxPixels: 83e5,
@@ -28799,6 +28808,146 @@ var SETTINGS = {
     };
     root.traverse(add);
     ROOMS.forEach((R) => R.pivot && R.pivot.traverse(add));
+    FADE.units.clear();
+    FADE.byMesh.clear();
+    FADE.meshes.length = 0;
+    const fadeable = [];
+    const addF = (o) => {
+      if (o.isMesh && !/Floor|Rug|Carpet|Ceil|Skirt|Plinth/i.test(o.name + " " + (o.parent ? o.parent.name : "")) && !(o.material && (o.material.name === "T_Outline" || o.material.name === "T_Ink"))) fadeable.push(o);
+    };
+    root.traverse(addF);
+    ROOMS.forEach((R) => R.pivot && R.pivot.traverse(addF));
+    FADE.meshes.push(...fadeable);
+    for (const o of fadeable) {
+      let u = o;
+      const par = o.parent;
+      if (par && par !== root && !par.isScene && par.children.length <= 8 && par.children.every((c) => c.isMesh)) u = par;
+      if (!FADE.units.has(u)) {
+        const meshes = [];
+        u.traverse((m) => {
+          if (m.isMesh) meshes.push(m);
+        });
+        const moving = ROOMS.some((R) => R.pivot && (u === R.pivot || u.parent === R.pivot || o.parent === R.pivot));
+        FADE.units.set(u, { obj: u, meshes, orig: meshes.map((m) => m.material), fade: null, shown: 1, box: new Box3().setFromObject(u), moving });
+      }
+      FADE.byMesh.set(o, FADE.units.get(u));
+    }
+    const bx = new Box3();
+    for (const R of ROOMS) {
+      R.frontUnits = [];
+      const ux = R.doorPos.x - R.hinge.x, uz = R.doorPos.y - R.hinge.y, ul = Math.hypot(ux, uz) || 1;
+      const along = Math.abs(ux / ul) > 0.5;
+      const r = along ? { x0: R.doorPos.x - 1.7, x1: R.doorPos.x + 1.7, z0: R.doorPos.y - 0.3, z1: R.doorPos.y + 0.3 } : { x0: R.doorPos.x - 0.3, x1: R.doorPos.x + 0.3, z0: R.doorPos.y - 1.7, z1: R.doorPos.y + 1.7 };
+      for (const [u, info] of FADE.units) {
+        const nm = u.name + " " + (u.parent ? u.parent.name : "");
+        bx.setFromObject(u);
+        const isDoor = R.pivot && (u === R.pivot || u.parent === R.pivot);
+        if (!isDoor && !/Wall/i.test(nm)) continue;
+        if (bx.max.x < r.x0 || bx.min.x > r.x1 || bx.max.z < r.z0 || bx.min.z > r.z1) continue;
+        if (!isDoor && Math.min(bx.max.x - bx.min.x, bx.max.z - bx.min.z) > 0.4) continue;
+        R.frontUnits.push(info);
+      }
+    }
+  }
+  var FADE = { meshes: [], units: /* @__PURE__ */ new Map(), byMesh: /* @__PURE__ */ new Map(), want: { p1: /* @__PURE__ */ new Map(), p2: /* @__PURE__ */ new Map() }, ghost: 0.14 };
+  var fadeRay = new Raycaster();
+  var _fd = new Vector3();
+  var _fo = new Vector3();
+  function fadeHits(from, to, set) {
+    _fd.copy(to).sub(from);
+    const len = _fd.length();
+    if (len < 0.05) return;
+    _fd.divideScalar(len);
+    fadeRay.near = 0;
+    fadeRay.far = len - 0.08;
+    fadeRay.set(from, _fd);
+    for (const h of fadeRay.intersectObjects(FADE.meshes, false)) {
+      const u = FADE.byMesh.get(h.object);
+      if (u) set.add(u);
+    }
+    _fo.copy(to).addScaledVector(_fd, -0.08);
+    _fd.negate();
+    fadeRay.far = len - 0.08;
+    fadeRay.set(_fo, _fd);
+    for (const h of fadeRay.intersectObjects(FADE.meshes, false)) {
+      const u = FADE.byMesh.get(h.object);
+      if (u) set.add(u);
+    }
+  }
+  function updateFade(key, cp, st, dt) {
+    const f = new Vector2(Math.sin(st.yaw), Math.cos(st.yaw));
+    const y = st.y || 0, P = st.pos;
+    const pts = [
+      new Vector3(P.x, y + 0.45, P.z),
+      new Vector3(P.x, y + 0.08, P.z),
+      new Vector3(P.x + f.y * 0.45, y + 0.25, P.z - f.x * 0.45),
+      new Vector3(P.x - f.y * 0.45, y + 0.25, P.z + f.x * 0.45)
+    ];
+    pts.push(new Vector3(P.x + f.y * 0.9, y + 0.3, P.z - f.x * 0.9), new Vector3(P.x - f.y * 0.9, y + 0.3, P.z + f.x * 0.9));
+    const hit = /* @__PURE__ */ new Set();
+    pts.forEach((pt) => fadeHits(cp, pt, hit));
+    for (const u of FADE.units.values()) {
+      if (u.moving) u.box.setFromObject(u.obj);
+      if (u.box.distanceToPoint(cp) < 1) hit.add(u);
+    }
+    for (const R of ROOMS) {
+      if (R.openAmt > 0.3 && R.frontUnits && Math.hypot(P.x - R.doorPos.x, P.z - R.doorPos.y) < 2.6) R.frontUnits.forEach((u) => hit.add(u));
+    }
+    const want = FADE.want[key], k = dt > 0 ? Math.min(1, dt * 9) : 1;
+    hit.forEach((u) => {
+      if (!want.has(u)) want.set(u, 1);
+    });
+    for (const [u, v] of want) {
+      const target = hit.has(u) ? FADE.ghost : 1;
+      const nv = v + (target - v) * k;
+      if (nv > 0.995 && target === 1) want.delete(u);
+      else want.set(u, nv);
+    }
+  }
+  function applyFade(key) {
+    const want = key ? FADE.want[key] : null;
+    for (const u of FADE.units.values()) {
+      const v = want ? want.get(u) ?? 1 : 1;
+      if (v >= 0.995) {
+        if (u.shown !== 1) {
+          u.meshes.forEach((m, i) => {
+            m.material = u.orig[i];
+            m.visible = true;
+          });
+          u.shown = 1;
+        }
+        continue;
+      }
+      if (!u.fade) u.fade = u.orig.map((om) => {
+        const one = (mm) => {
+          const c = mm.clone();
+          c.transparent = true;
+          c.depthWrite = false;
+          if (mm.onBeforeCompile) {
+            c.onBeforeCompile = mm.onBeforeCompile;
+            c.customProgramCacheKey = () => (mm.customProgramCacheKey ? mm.customProgramCacheKey() : "") + "_fade";
+          }
+          return c;
+        };
+        return Array.isArray(om) ? om.map(one) : one(om);
+      });
+      u.meshes.forEach((m, i) => {
+        const om = u.orig[i], fm = u.fade[i];
+        const outline = !Array.isArray(om) && (om.name === "T_Outline" || om.name === "T_Ink");
+        if (outline) {
+          m.visible = v > 0.92;
+          return;
+        }
+        m.material = fm;
+        (Array.isArray(fm) ? fm : [fm]).forEach((c, j) => {
+          const o = Array.isArray(om) ? om[j] : om;
+          c.opacity = v * (o.opacity ?? 1);
+          if (o.emissiveIntensity !== void 0) c.emissiveIntensity = o.emissiveIntensity;
+          if (o.color) c.color.copy(o.color);
+        });
+      });
+      u.shown = v;
+    }
   }
   var _v1 = new Vector3();
   var _v2 = new Vector3();
@@ -28816,32 +28965,18 @@ var SETTINGS = {
     if (b.length) best = Math.min(best, far - b[b.length - 1].distance);
     return best;
   }
-  function followCam(cam, st, cp, cl, dt) {
+  function followCam(cam, st, cp, cl, dt, key = "p1") {
     const f = new Vector2(Math.sin(st.yaw), Math.cos(st.yaw));
     const pitch = st.pitch || 0, y = st.y || 0, ground = st.ground || 0;
-    const dist = 1.45 - pitch * 0.5, h = 0.95 + pitch * 0.9;
+    const V = SETTINGS.camera || {};
+    const dist = (V.distance ?? 2.3) - pitch * 0.6, h = (V.height ?? 1.6) + pitch * 1.1;
     const lift = ground + (y - ground) * 0.5;
-    const head = new Vector3(st.pos.x, lift + y * 0.5 + 0.45, st.pos.z);
-    const want = new Vector3(st.pos.x - f.x * dist, h + lift, st.pos.z - f.y * dist);
-    const dir = want.clone().sub(head);
-    const full = dir.length();
-    dir.normalize();
-    const free = camHit(head, dir, full);
-    const keep = Math.max(0.22, free - 0.12);
-    const target = head.clone().addScaledVector(dir, keep);
-    const squeeze = clamp2(1 - keep / full, 0, 1);
-    target.y += squeeze * 0.55;
-    cp.lerp(target, 1 - Math.pow(5e-4, dt));
-    const d2 = cp.clone().sub(head);
-    const len2 = d2.length();
-    if (len2 > 0.01) {
-      d2.normalize();
-      const free2 = camHit(head, d2, len2);
-      if (free2 < len2) cp.copy(head).addScaledVector(d2, Math.max(0.18, free2 - 0.1));
-    }
-    cl.set(st.pos.x + f.x * 0.6 * (1 - squeeze), 0.38 - pitch * 0.15 + lift + (y - lift) * 0.6, st.pos.z + f.y * 0.6 * (1 - squeeze));
+    const target = new Vector3(st.pos.x - f.x * dist, h + lift, st.pos.z - f.y * dist);
+    cp.lerp(target, dt > 0 ? 1 - Math.pow(8e-4, dt) : 1);
+    cl.set(st.pos.x + f.x * 0.9, 0.22 - pitch * 0.2 + lift + (y - lift) * 0.6, st.pos.z + f.y * 0.9);
     cam.position.copy(cp);
     cam.lookAt(cl);
+    updateFade(key, cp, st, dt);
   }
   function updateCamera(dt) {
     const t = performance.now();
@@ -28871,7 +29006,7 @@ var SETTINGS = {
     followCam(camera, M, camPos, camLook, dt);
     if (G.mode === "duel" && D2.e) {
       const e = D2.e;
-      followCam(camera2, { pos: e.pos, yaw: D2.yaw, pitch: 0.12, y: e.y || 0, ground: e.y || 0 }, D2.camPos, D2.camLook, dt);
+      followCam(camera2, { pos: e.pos, yaw: D2.yaw, pitch: 0.12, y: e.y || 0, ground: e.y || 0 }, D2.camPos, D2.camLook, dt, "p2");
     }
   }
   function updateEnemies(dt) {
@@ -29141,10 +29276,12 @@ var SETTINGS = {
     const w = innerWidth, h = innerHeight;
     if (split && D2.e) {
       renderer.setScissorTest(true);
+      applyFade("p1");
       fitCam(camera, w / 2 / h);
       renderer.setViewport(0, 0, w / 2, h);
       renderer.setScissor(0, 0, w / 2, h);
       renderer.render(scene, camera);
+      applyFade("p2");
       fitCam(camera2, w / 2 / h);
       renderer.setViewport(w / 2, 0, w / 2, h);
       renderer.setScissor(w / 2, 0, w / 2, h);
@@ -29152,6 +29289,7 @@ var SETTINGS = {
       renderer.setScissorTest(false);
       renderer.setViewport(0, 0, w, h);
     } else {
+      applyFade(titleCam ? null : "p1");
       fitCam(camera, w / h);
       renderer.render(scene, camera);
     }
@@ -29182,7 +29320,7 @@ var SETTINGS = {
     show("title");
     requestAnimationFrame(loop);
   })();
-  window.__game = { duelEnd, G, M, SAVE, SETTINGS, scene, camera, spawnEnemy, showFact, beginNight, showMap, showMarket, startDuel, duelSetup, nightComplete, monkeyDown, setCostume, T, D2, PADS, attack, duelAttack, toTitle, quizStageIntro, startQuiz, finishQuiz, keys };
+  window.__game = { ROOMS, duelEnd, G, M, SAVE, SETTINGS, scene, camera, spawnEnemy, showFact, beginNight, showMap, showMarket, startDuel, duelSetup, nightComplete, monkeyDown, setCostume, T, D2, PADS, attack, duelAttack, toTitle, quizStageIntro, startQuiz, finishQuiz, keys };
 })();
 
 </script>

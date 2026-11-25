@@ -33,6 +33,13 @@ export const SETTINGS = {
     joystickArea: 0.35,      // left part of the screen (0.35 = 35%) where a touch starts the walking joystick
   },
 
+  // ---------- CAMERA (behind the monkey) ----------
+  // Walls, doors and furniture between the camera and the monkey become see-through,
+  // so the camera can stay back and show the area around the monkey.
+  camera: {
+    distance: 2.3,           // how far behind the monkey (metres). Bigger = see more around it
+    height: 1.6,             // how high above the floor (metres). Bigger = looks down more, like a map
+  },
   // ---------- DISPLAY (big screens, video walls) ----------
   display: {
     maxPixels: 8300000,      // most pixels drawn per frame (8.3 million = 4K). The 7680x2160 wall is drawn at ~70%
